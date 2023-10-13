@@ -102,7 +102,8 @@ vector<uint8_t> rotateBMPRight(const vector<uint8_t>& data, const BMPInfoHeader&
 
 // Function to apply Gaussian blur to an image
 void applyGaussianBlur(vector<uint8_t>& image, int width, int height, int channels, double sigma) {
-//same as before corrections 
+    
+//same as before corrections, but with exp() from <cmath>
     int kernelSize = static_cast<int>(6 * sigma);
     if (kernelSize % 2 == 0) {
         kernelSize++;
