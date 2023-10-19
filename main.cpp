@@ -1,7 +1,7 @@
 #include <iostream>
 #include <fstream>
-#include <vector>
 #include <cmath>
+#include <memory>
 
 using namespace std;
 
@@ -32,26 +32,31 @@ struct BMPInfoHeader {
 #pragma pack(pop)
 
 // Function to read a BMP image
-vector<uint8_t> readBMP(const string& filename, BMPInfoHeader& infoHeader) {
+bool readBMP(const string& filename, BMPInfoHeader& infoHeader, unique_ptr<uint8_t[]>& imageData) {
     ifstream file(filename, ios::binary);
 
     if (!file) {
         cerr << "Error opening the file." << endl;
-        return vector<uint8_t>();
+        return false;
     }
 
     BMPHeader header;
     file.read(reinterpret_cast<char*>(&header), sizeof(BMPHeader));
     file.read(reinterpret_cast<char*>(&infoHeader), sizeof(BMPInfoHeader));
 
-    vector<uint8_t> data(infoHeader.dataSize);
-    file.read(reinterpret_cast<char*>(data.data()), infoHeader.dataSize);
+    if (infoHeader.bitsPerPixel != 24) {
+        cerr << "Only 24-bit BMP images are supported." << endl;
+        return false;
+    }
 
-    return data;
+    imageData = make_unique<uint8_t[]>(infoHeader.dataSize);
+    file.read(reinterpret_cast<char*>(imageData.get()), infoHeader.dataSize);
+
+    return true;
 }
 
 // Function to write a BMP image
-void writeBMP(const string& filename, const BMPHeader& header, const BMPInfoHeader& infoHeader, const vector<uint8_t>& data) {
+void writeBMP(const string& filename, const BMPHeader& header, const BMPInfoHeader& infoHeader, const uint8_t* imageData) {
     ofstream file(filename, ios::binary);
 
     if (!file) {
@@ -61,49 +66,39 @@ void writeBMP(const string& filename, const BMPHeader& header, const BMPInfoHead
 
     file.write(reinterpret_cast<const char*>(&header), sizeof(BMPHeader));
     file.write(reinterpret_cast<const char*>(&infoHeader), sizeof(BMPInfoHeader));
-    file.write(reinterpret_cast<const char*>(data.data()), data.size());
+    file.write(reinterpret_cast<const char*>(imageData), infoHeader.dataSize);
 }
 
 // Function to rotate a BMP image to the left (counterclockwise)
-vector<uint8_t> rotateBMPLeft(const vector<uint8_t>& data, const BMPInfoHeader& infoHeader) {
-    vector<uint8_t> rotatedData(infoHeader.dataSize, 0);
-
+void rotateBMPLeft(const uint8_t* imageData, uint8_t* rotatedData, const BMPInfoHeader& infoHeader) {
     for (int y = 0; y < infoHeader.height; y++) {
         for (int x = 0; x < infoHeader.width; x++) {
             int originalIndex = (y * infoHeader.width + x) * 3;
             int rotatedIndex = (x * infoHeader.height + (infoHeader.height - 1 - y)) * 3;
 
             for (int channel = 0; channel < 3; channel++) {
-                rotatedData[rotatedIndex + channel] = data[originalIndex + channel];
+                rotatedData[rotatedIndex + channel] = imageData[originalIndex + channel];
             }
         }
     }
-
-    return rotatedData;
 }
 
 // Function to rotate a BMP image to the right (clockwise)
-vector<uint8_t> rotateBMPRight(const vector<uint8_t>& data, const BMPInfoHeader& infoHeader) {
-    vector<uint8_t> rotatedData(infoHeader.dataSize, 0);
-
+void rotateBMPRight(const uint8_t* imageData, uint8_t* rotatedData, const BMPInfoHeader& infoHeader) {
     for (int y = 0; y < infoHeader.height; y++) {
         for (int x = 0; x < infoHeader.width; x++) {
             int originalIndex = (y * infoHeader.width + x) * 3;
             int rotatedIndex = ((infoHeader.width - 1 - x) * infoHeader.height + y) * 3;
 
             for (int channel = 0; channel < 3; channel++) {
-                rotatedData[rotatedIndex + channel] = data[originalIndex + channel];
+                rotatedData[rotatedIndex + channel] = imageData[originalIndex + channel];
             }
         }
     }
-
-    return rotatedData;
 }
 
 // Function to apply Gaussian blur to an image
-void applyGaussianBlur(vector<uint8_t>& image, int width, int height, int channels, double sigma) {
-    
-//same as before corrections, but with exp() from <cmath>
+void applyGaussianBlur(uint8_t* image, int width, int height, double sigma) {
     int kernelSize = static_cast<int>(6 * sigma);
     if (kernelSize % 2 == 0) {
         kernelSize++;
@@ -131,12 +126,11 @@ void applyGaussianBlur(vector<uint8_t>& image, int width, int height, int channe
     for (int i = 0; i < kernelSize * kernelSize; i++) {
         kernel[i] /= sum;
     }
-
-    vector<uint8_t> outputImage(image.size());
+    uint8_t* outputImage = new uint8_t[width * height * 3];
 
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            for (int c = 0; c < channels; c++) {
+            for (int c = 0; c < 3; c++) {
                 double newValue = 0.0;
                 for (int i = -halfKernel; i <= halfKernel; i++) {
                     for (int j = -halfKernel; j <= halfKernel; j++) {
@@ -144,31 +138,34 @@ void applyGaussianBlur(vector<uint8_t>& image, int width, int height, int channe
                         int yOffset = y + i;
 
                         if (xOffset >= 0 && xOffset < width && yOffset >= 0 && yOffset < height) {
-                            int index = (yOffset * width + xOffset) * channels + c;
+                            int index = (yOffset * width + xOffset) * 3 + c;
                             int kernelIndex = (i + halfKernel) * kernelSize + (j + halfKernel);
                             newValue += image[index] * kernel[kernelIndex];
                         }
                     }
                 }
-                int outputIndex = (y * width + x) * channels + c;
+                int outputIndex = (y * width + x) * 3 + c;
                 outputImage[outputIndex] = static_cast<uint8_t>(newValue);
             }
         }
     }
 
     // Copy the filtered image back to the original image
-    for (size_t i = 0; i < image.size(); i++) {
+    for (int i = 0; i < width * height * 3; i++) {
         image[i] = outputImage[i];
     }
 
     delete[] kernel;
+    delete[] outputImage;
 }
 
 int main() {
     BMPInfoHeader infoHeader;
-    vector<uint8_t> imageData = readBMP("picture.bmp", infoHeader);
+    unique_ptr<uint8_t[]> imageData;
+    unique_ptr<uint8_t[]> rotatedImageDataLeft;
+    unique_ptr<uint8_t[]> rotatedImageDataRight;
 
-    if (imageData.empty()) {
+    if (!readBMP("picture.bmp", infoHeader, imageData)) {
         return 1;
     }
 
@@ -176,34 +173,34 @@ int main() {
     ifstream("picture.bmp", ios::binary).read(reinterpret_cast<char*>(&header), sizeof(BMPHeader));
     cout << "Amount of memory allocated for loading the image: " << infoHeader.dataSize << " bytes" << endl;
 
-    // Rotate the image to the right
-    vector<uint8_t> rotatedImageDataRight = rotateBMPRight(imageData, infoHeader);
-    BMPInfoHeader rotatedInfoHeaderRight = infoHeader;
-    rotatedInfoHeaderRight.width = infoHeader.height;
-    rotatedInfoHeaderRight.height = infoHeader.width;
-    rotatedInfoHeaderRight.dataSize = rotatedImageDataRight.size();
-    writeBMP("rotated1_right.bmp", header, rotatedInfoHeaderRight, rotatedImageDataRight);
-    cout << "Image rotated to the right and saved as 'rotated1_right.bmp'." << endl;
-
     // Rotate the image to the left
-    vector<uint8_t> rotatedImageDataLeft = rotateBMPLeft(imageData, infoHeader);
+    rotatedImageDataLeft = make_unique<uint8_t[]>(infoHeader.dataSize);
+    rotateBMPLeft(imageData.get(), rotatedImageDataLeft.get(), infoHeader);
     BMPInfoHeader rotatedInfoHeaderLeft = infoHeader;
     rotatedInfoHeaderLeft.width = infoHeader.height;
     rotatedInfoHeaderLeft.height = infoHeader.width;
-    rotatedInfoHeaderLeft.dataSize = rotatedImageDataLeft.size();
-    writeBMP("rotated2_left.bmp", header, rotatedInfoHeaderLeft, rotatedImageDataLeft);
+    writeBMP("rotated2_left.bmp", header, rotatedInfoHeaderLeft, rotatedImageDataLeft.get());
     cout << "Image rotated to the left and saved as 'rotated2_left.bmp'." << endl;
 
-    // Apply Gaussian blur to the 'rotated_left.bmp' image
+    // Rotate the image to the right
+    rotatedImageDataRight = make_unique<uint8_t[]>(infoHeader.dataSize);
+    rotateBMPRight(imageData.get(), rotatedImageDataRight.get(), infoHeader);
+    BMPInfoHeader rotatedInfoHeaderRight = infoHeader;
+    rotatedInfoHeaderRight.width = infoHeader.height;
+    rotatedInfoHeaderRight.height = infoHeader.width;
+    writeBMP("rotated1_right.bmp", header, rotatedInfoHeaderRight, rotatedImageDataRight.get());
+    cout << "Image rotated to the right and saved as 'rotated1_right.bmp'." << endl;
+
+    // Apply Gaussian blur to the 'rotated2_left.bmp' image
     double sigma = 1.5; // Adjust the sigma value as needed
-    applyGaussianBlur(rotatedImageDataLeft, rotatedInfoHeaderLeft.width, rotatedInfoHeaderLeft.height, 3, sigma);
+    applyGaussianBlur(rotatedImageDataLeft.get(), rotatedInfoHeaderLeft.width, rotatedInfoHeaderLeft.height, sigma);
 
     // Update the BMP header for the filtered image
     BMPInfoHeader filteredInfoHeader = rotatedInfoHeaderLeft;
-    filteredInfoHeader.dataSize = rotatedImageDataLeft.size();
+    filteredInfoHeader.dataSize = rotatedInfoHeaderLeft.dataSize;
 
     // Save the filtered image as "rotated2_gaussian.bmp"
-    writeBMP("rotated2_gaussian.bmp", header, filteredInfoHeader, rotatedImageDataLeft);
+    writeBMP("rotated2_gaussian.bmp", header, filteredInfoHeader, rotatedImageDataLeft.get());
     cout << "Gaussian blur applied to 'rotated2_left.bmp' and saved as 'rotated2_gaussian.bmp'." << endl;
 
     return 0;
